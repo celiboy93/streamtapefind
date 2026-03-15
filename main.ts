@@ -5,7 +5,7 @@ const html = `<!doctype html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Streamtape Only Movie Filter</title>
+  <title>Movie Link Filter</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -93,12 +93,8 @@ const html = `<!doctype html>
       font-size: 13px;
       margin-top: 8px;
     }
-    .ok {
-      color: #86efac;
-    }
-    .warn {
-      color: #fbbf24;
-    }
+    .ok { color: #86efac; }
+    .warn { color: #fbbf24; }
   </style>
 </head>
 <body>
@@ -106,7 +102,7 @@ const html = `<!doctype html>
     <div class="card">
       <h1>Streamtape Only Movie Filter</h1>
       <p>
-        JSON file တင်လို့ရသလို paste လည်းလုပ်လို့ရပါတယ်။
+        CSV / JSON file တင်လို့ရသလို paste လည်းလုပ်လို့ရပါတယ်။
         ဒီ tool က <b>files.stream + files.download</b> ထဲမှာ
         <b>streamtape links ပဲရှိတဲ့ movie titles</b> တွေကိုပဲ ထုတ်ပေးပါမယ်။
       </p>
@@ -116,14 +112,14 @@ const html = `<!doctype html>
     </div>
 
     <div class="card">
-      <h3>Upload .json File</h3>
-      <input type="file" id="jsonFile" accept=".json,application/json" />
+      <h3>Upload File</h3>
+      <input type="file" id="dataFile" accept=".json,.csv,.txt,application/json,text/csv,text/plain" />
       <div class="muted" id="fileStatus">No file selected.</div>
     </div>
 
     <div class="card">
-      <h3>Or Paste JSON</h3>
-      <textarea id="input" placeholder="Paste JSON here..."></textarea>
+      <h3>Or Paste Data</h3>
+      <textarea id="input" placeholder="Paste JSON or CSV here..."></textarea>
       <div>
         <button onclick="runFilter()">Filter Now</button>
         <button class="secondary" onclick="copyResult()">Copy Result</button>
@@ -140,7 +136,7 @@ const html = `<!doctype html>
   </div>
 
   <script>
-    const fileInput = document.getElementById("jsonFile");
+    const fileInput = document.getElementById("dataFile");
     const inputEl = document.getElementById("input");
     const fileStatusEl = document.getElementById("fileStatus");
 
@@ -171,12 +167,120 @@ const html = `<!doctype html>
       }
     }
 
-    function getMoviesRoot(parsed) {
-      if (Array.isArray(parsed)) return parsed;
-      if (Array.isArray(parsed.movies)) return parsed.movies;
-      if (Array.isArray(parsed.data)) return parsed.data;
-      if (Array.isArray(parsed.results)) return parsed.results;
-      return null;
+    function looksLikeJson(text) {
+      const s = String(text || "").trim();
+      return s.startsWith("{") || s.startsWith("[");
+    }
+
+    function splitCsvLine(line) {
+      const result = [];
+      let current = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        const next = line[i + 1];
+
+        if (ch === '"') {
+          if (inQuotes && next === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === "," && !inQuotes) {
+          result.push(current);
+          current = "";
+        } else {
+          current += ch;
+        }
+      }
+
+      result.push(current);
+      return result;
+    }
+
+    function parseCsv(text) {
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let inQuotes = false;
+
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        const next = text[i + 1];
+
+        if (ch === '"') {
+          if (inQuotes && next === '"') {
+            cell += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+          continue;
+        }
+
+        if (ch === "," && !inQuotes) {
+          row.push(cell);
+          cell = "";
+          continue;
+        }
+
+        if ((ch === "\\n" || ch === "\\r") && !inQuotes) {
+          if (ch === "\\r" && next === "\\n") i++;
+          row.push(cell);
+          cell = "";
+
+          const isMeaningful = row.some(v => String(v).trim() !== "");
+          if (isMeaningful) rows.push(row);
+
+          row = [];
+          continue;
+        }
+
+        cell += ch;
+      }
+
+      row.push(cell);
+      if (row.some(v => String(v).trim() !== "")) {
+        rows.push(row);
+      }
+
+      if (!rows.length) return [];
+
+      const headers = rows[0].map(h => String(h).trim());
+      const items = [];
+
+      for (let i = 1; i < rows.length; i++) {
+        const values = rows[i];
+        const obj = {};
+
+        for (let j = 0; j < headers.length; j++) {
+          obj[headers[j]] = values[j] ?? "";
+        }
+
+        items.push(obj);
+      }
+
+      return items;
+    }
+
+    function getMoviesRootFromAnyText(text) {
+      const raw = String(text || "").trim();
+      if (!raw) return null;
+
+      if (looksLikeJson(raw)) {
+        const parsed = safeJsonParse(raw, null);
+        if (!parsed) return null;
+
+        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed.movies)) return parsed.movies;
+        if (Array.isArray(parsed.data)) return parsed.data;
+        if (Array.isArray(parsed.results)) return parsed.results;
+        return null;
+      }
+
+      return parseCsv(raw);
     }
 
     function normalizeHost(url) {
@@ -194,6 +298,8 @@ const html = `<!doctype html>
 
     function extractPlayableUrls(movie) {
       let files = movie.files;
+
+      if (!files) return [];
 
       if (typeof files === "string") {
         files = safeJsonParse(files, null);
@@ -216,7 +322,14 @@ const html = `<!doctype html>
     }
 
     function getTitle(movie, index) {
-      const title = movie.title || movie.name || movie.movie_title || movie.code || ("Untitled #" + (index + 1));
+      const title =
+        movie.title ||
+        movie.name ||
+        movie.movie_title ||
+        movie.code ||
+        movie.filename ||
+        ("Untitled #" + (index + 1));
+
       return String(title).trim();
     }
 
@@ -227,19 +340,11 @@ const html = `<!doctype html>
       resultEl.textContent = "";
       statsEl.textContent = "Processing...";
 
-      let parsed;
-      try {
-        parsed = JSON.parse(inputEl.value);
-      } catch (err) {
-        resultEl.textContent = "JSON parse error: " + err.message;
-        statsEl.textContent = "Failed.";
-        return;
-      }
+      const movies = getMoviesRootFromAnyText(inputEl.value);
 
-      const movies = getMoviesRoot(parsed);
-      if (!movies) {
-        resultEl.textContent = "Movie array မတွေ့ပါ။ Root array ဖြစ်ရမယ်၊ သို့မဟုတ် movies/data/results ထဲမှာ array ဖြစ်ရမယ်။";
-        statsEl.textContent = "Invalid movie list.";
+      if (!movies || !Array.isArray(movies) || !movies.length) {
+        resultEl.textContent = "Valid JSON/CSV movie data မတွေ့ပါ။";
+        statsEl.textContent = "Invalid data.";
         return;
       }
 
@@ -302,7 +407,7 @@ const html = `<!doctype html>
     }
 
     function clearAllData() {
-      document.getElementById("jsonFile").value = "";
+      document.getElementById("dataFile").value = "";
       document.getElementById("input").value = "";
       document.getElementById("result").textContent = "";
       document.getElementById("stats").textContent = "Cleared.";
@@ -315,6 +420,8 @@ const html = `<!doctype html>
 
 serve(() => {
   return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+    },
   });
 });
